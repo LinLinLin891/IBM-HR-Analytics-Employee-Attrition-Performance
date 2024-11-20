@@ -1,0 +1,705 @@
+---
+title: "Stat 232 Final Project Report"
+author: "Haiying Lin, Cindy Miao, Susie Liang"
+date: "2024-03-13"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Title
+**IBM HR Analytics Employee Attrition & Performance**
+
+### Introduction and Description 
+**This dataset is a IBM employee record based on personal information such as gender and education background; performance records such as business travel, monthly income, and attrition status. There are total 1470 rows and 35 columns with 26 numerical variables and 9 categorical variables in the dataset.** 
+
+### Project Focus
+**We aim to discover the relationship between employee’s personal information and performance record with their attrition status. This analysis can help us get strategies to enhance understanding of employee performances, and potentially reducing overall attrition rates. This insight is crucial for creating a supportive work environment that encourages employees to stay.**
+
+**To analyze the factors influencing the employee attrition the most, we will be performing `Step wise, Regsubsets, and Lasso model selections`, `logistic regression and classification` to find the variables that most affect the employee attrition.** 
+
+**Dataset: <br>**
+https://www.kaggle.com/datasets/pavansubhasht/ibm-hr-analytics-attrition-dataset/data <br>
+
+
+```{r libraries, message=FALSE, warning=FALSE}
+# Load needed Libraries
+library(readr)
+library(tidyverse)
+library(ggplot2)
+library(ggpubr)
+library(boot)
+library(gam)
+library(corrplot)
+library(ggcorrplot)
+library(leaps) 
+library(caret)
+library(glmnet)
+library(rpart)
+library(rpart.plot)
+```
+
+```{r setseed}
+set.seed(232)
+```
+
+
+#### Data Cleaning
+```{r import data, message=FALSE, warning=FALSE}
+# import data
+IBM_Employee <- read.csv("WA_Fn-UseC_-HR-Employee-Attrition.csv")
+
+# glance of dataset
+str(IBM_Employee)
+```
+
+*Delete usefulness variables*
+```{r delete variables, message=FALSE, warning=FALSE}
+IBM_Employee <- select(IBM_Employee, -c("EmployeeCount", "EmployeeNumber", "Over18", "StandardHours"))
+```
+
+**By looking at our dataset, we have no missing values. However, there are four columns with all same rows. Therefore, we removed the four unnecessary categories: `EmployeeCount`, `EmployeeNumber`,` Over18`, and `StandardHours`.** <br> 
+
+*Change `Attrition` to factors "Yes" = 1 & "No" = 0*
+```{r attrition->factor}
+IBM_Employee$Attrition <- ifelse(IBM_Employee$Attrition == "Yes", 1, 0)
+```
+
+**In order to perform logistic regression, we use 1 and 0 to represent "Yes" and "No" for `Attrition`.** <br>
+
+*Change variables with number levels to factors*
+```{r numerical->categorical, echo=FALSE, message=FALSE, warning=FALSE}
+# variables displayed in numbers but representing factors
+names <- c("Attrition", "OverTime", "Education", "EnvironmentSatisfaction", "JobInvolvement", "JobSatisfaction", "JobLevel", "PerformanceRating", "RelationshipSatisfaction", "WorkLifeBalance", "StockOptionLevel")
+
+# change above to factor variables
+IBM_Employee <- IBM_Employee %>%
+  mutate(across(names, as.factor))
+```
+
+**By filtering all the numerical variables, we see that there are many incorrect categorized variables. For instance, a lot of the variables has number with categories "1, 2, 3, 4", but are indicated as integers. So we changed all the variables that are actually leveled into `factor` variables. After transformation, there are 14 numerical variables and 17 categorical variables.** <br>
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# view of the cleaned dataset
+str(IBM_Employee)
+```
+
+**There are 31 variables in the cleaned dataset which is a large amount, so we decide to perform some visualizations and variable(model) selections using `stepwise`, `regsubsets`, and `Lasso` methods to remove variables that do not have large affects on the attrition.** <br>
+
+
+#### Data Exploration and Visualization 
+
+*Summary of numerical variables*
+```{r numerical summary, echo=FALSE, message=FALSE, warning=FALSE}
+# filter numerical variables
+IBM_numeric <- select_if(IBM_Employee, is.numeric)
+# five number summaries
+summary(IBM_numeric)
+```
+
+*Correlation Matrix*
+```{r correlation matrix, echo=FALSE, message=FALSE, warning=FALSE}
+# correlation matrix of the numerical variables
+corr <- round(cor(IBM_numeric), 1)
+
+# correlation plot
+ggcorrplot(corr, hc.order = TRUE, type = "lower", lab = TRUE,
+   outline.col = "white",
+   ggtheme = ggplot2::theme_gray,
+   colors = c("#6D9EC1", "white", "#E46726"))
+```
+<br>
+
+*Visualizations*
+
+**Attrition Distribution**
+```{r}
+# Subset for Attrition = "Yes"
+attrition_yes <- subset(IBM_Employee, Attrition == 1)
+
+# Subset for Attrition = "No"
+attrition_no <- subset(IBM_Employee, Attrition == 0)
+```
+
+```{r attrition, message=FALSE, warning=FALSE}
+# Histogram
+ggplot(IBM_Employee, aes(x = Attrition, fill = Attrition)) +
+  geom_histogram(stat = "count", position = "identity", bins = 30) +
+  labs(title = "Distribution of Attrition", x = "Attrition") +
+  geom_text(stat = "count", aes(label = ..count.., group = Attrition), 
+            vjust = -0.3, col = "red4", size = 3,        
+            position = position_dodge(width = 0.9)) +
+  scale_fill_manual(values = c("#99CCFF", "#FF9999"), labels = c("No", "Yes"))
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Proportion Pie Chart
+yes <- 237 / (237 + 1233)
+no <- 1233 / (237 + 1233)
+proportions <- c(Yes = yes, No = 1 - yes)
+
+yes.labels <- sprintf("%s (%.1f%%)", names(proportions), 100 * proportions)
+
+pie(proportions, labels = yes.labels, main = "Attrition Proportion", col = c("#FF9999", "#99CCFF"))
+```
+
+
+**Based on the graphical distribution of `Attrition`, the distribution of employee who has left the company is 16.1% while employee who stays is 83.9%.** 
+
+**Accordingly, we will set our cut off point for comparing predictions with actual outcomes as 80% for our model evaluation part.**
+
+
+**Attrition vs. Age**
+```{r Age, echo=FALSE, message=FALSE, warning=FALSE}
+# Box Plot
+Age <- ggplot(IBM_Employee, aes(Age, Attrition)) + 
+  geom_boxplot(aes(fill = Attrition)) + 
+  ggtitle("Attrition vs. Age") + 
+  scale_fill_discrete(labels = c("No", "Yes")) + 
+  theme(axis.text = element_text(size = 7), 
+        legend.text = element_text(size = 4), 
+        title = element_text(size = 8)) +
+  stat_summary(fun = mean, geom = "point", col = "grey4") +  # adding means
+  stat_summary(fun = mean, geom = "text", col = "grey4",    
+               vjust = 1.5, hjust = -0.6, size = 3, 
+               aes(label = paste("Mean:", round(..x.., digits = 1)))) 
+
+Age
+```
+
+
+**Based on the boxplot, IBM employees who left the company has an average age of about 33 years old, while employees who stay in the company has an average age of about 38 years old. The median in among attrtion status differs by about 4 years old, and the actual mean differs by 4 also.**
+
+
+**Attrition vs. Gender**
+```{r Gender, echo=FALSE, message=FALSE, warning=FALSE}
+# Grouped Bar Chart 
+Gender <- ggplot(IBM_Employee, aes(Gender)) + 
+  geom_bar(aes(fill = Attrition), position = "dodge") +
+  ggtitle("Attrition vs. Gender") + 
+  theme(axis.text = element_text(size = 7), 
+        legend.text = element_text(size = 4), 
+        title = element_text(size = 8)) +
+  geom_text(stat = "count", aes(label = ..count.., group = Attrition), 
+            vjust = -0.3, col = "red4", size = 2,        
+            position = position_dodge(width = 0.9)) + 
+  scale_fill_discrete(labels = c("No", "Yes"))  
+
+Gender
+```
+
+```{r echo=FALSE, fig.height=4, fig.width=9, message=FALSE, warning=FALSE}
+# Proportion Pie Chart
+female.yes <- 87 / (87 + 501)
+male.yes <- 150 / (150 + 732)
+female.proportions <- c(Yes = female.yes, No = 1 - female.yes)
+male.proportions <- c(Yes = male.yes, No = 1 - male.yes)
+
+female.labels <- sprintf("%s (%.1f%%)", names(female.proportions), 100 * female.proportions)
+male.labels <- sprintf("%s (%.1f%%)", names(male.proportions), 100 * male.proportions)
+
+layout(matrix(c(1,2), 1, 2))
+pie(female.proportions, labels = female.labels, main = "Female 'Yes' Proportion", col = c("pink", "lightgrey"))
+pie(male.proportions, labels = male.labels, main = "Male 'Yes' Proportion", col = c("lightblue", "lightgrey"))
+```
+
+
+**Based on the grouped barplot and pie chart, there are significant differences between employees who attrited and not attrited among different gender. Males employees has a attrition proportion of 17%, and female employees has a attrition proportion of 14.8%. Male employees have a larger attrition rate than female employees.**
+
+
+**Attrition vs. Business Travel Frequency**
+```{r Travel Frequency, echo=FALSE, message=FALSE, warning=FALSE}
+# Grouped Bar Chart 
+orders <- c("Non-Travel", "Travel_Rarely", "Travel_Frequently")
+
+Travel <- ggplot(IBM_Employee, aes(BusinessTravel)) + 
+  geom_bar(aes(fill = Attrition), position = "dodge") +
+  ggtitle("Attrition vs. Business Travel") + 
+  theme(axis.text = element_text(size = 7), 
+        legend.text = element_text(size = 4), 
+        title = element_text(size = 8)) +
+  geom_text(stat = "count", aes(label = ..count.., group = Attrition), 
+            vjust = -0.3, col = "red4", size = 2,        
+            position = position_dodge(width = 0.9)) +
+  scale_x_discrete(limits = orders) +
+  scale_fill_manual(values = c("#d8b365", "#5ab4ac"), labels = c("No", "Yes"))
+
+Travel
+```
+
+```{r echo=FALSE, fig.height=4, fig.width=10, message=FALSE, warning=FALSE}
+# Proportion Pie Chart
+non.travel.yes <- 12 / (12 + 138)
+travel.rarely.yes <- 156 / (156 + 887)
+travel.frequently.yes <- 69 / (69 + 208)
+non.travel.proportions <- c(Yes = non.travel.yes, No = 1 - non.travel.yes)
+travel.rarely.proportions <- c(Yes = travel.rarely.yes, No = 1 - travel.rarely.yes)
+travel.frequently.proportions <- c(Yes = travel.frequently.yes, No = 1 -  travel.frequently.yes)
+
+non.travel.labels <- sprintf("%s (%.1f%%)", names(non.travel.proportions), 100 * non.travel.proportions)
+travel.rarely.labels <- sprintf("%s (%.1f%%)", names(travel.rarely.proportions), 100 * travel.rarely.proportions)
+travel.frequently.labels <- sprintf("%s (%.1f%%)", names(travel.frequently.proportions), 100 * travel.frequently.proportions)
+
+layout(matrix(c(1,2,3), 1, 3))
+pie(non.travel.proportions, labels = non.travel.labels, main = "Non.Travel.Proportion", col = c("green2", "lightgrey"))
+pie(travel.rarely.proportions, labels = travel.rarely.labels, main = "Travel.Rarely.Proportion", col = c("blue", "lightgrey"))
+pie(travel.frequently.proportions, labels = travel.frequently.labels, main = "Travel.Frequently.Proportion", col = c("orange", "lightgrey"))
+```
+
+
+**Based on the grouped barplot and pie chart, there are significant differences between employees who attrited and not attrited among each level of travel frequency. Specifically, attrition varies the most for employee who do not travel.**
+
+**Importantly, there exists a positive correlation between the travel frequency and employee attrition. As employees travel more frequently, they are more likely to end up leaving the company. Employees who travel frequently ended up having the most attrition proportion of 24.9%.**
+
+
+**Attrition vs. Department**
+```{r Department, echo=FALSE, message=FALSE, warning=FALSE}
+# Grouped Bar Chart 
+Department <- ggplot(IBM_Employee, aes(Department)) + 
+  geom_bar(aes(fill = Attrition), position = "dodge") +
+  ggtitle("Attrition vs. Department") +
+  theme(axis.text = element_text(size = 7), 
+        legend.text = element_text(size = 4), 
+        title = element_text(size = 8)) +
+  geom_text(stat = "count", aes(label = ..count.., group = Attrition), 
+            vjust = -0.3, col = "red4", size = 2,
+            position = position_dodge(width = 0.9)) +
+  scale_fill_manual(values = c("#E69F00", "#56B4E9"), labels = c("No", "Yes"))
+
+Department
+```
+
+```{r echo=FALSE, fig.height=4, fig.width=10, message=FALSE, warning=FALSE}
+# Proportions Pie Chart
+human.yes <- 12 / (12 + 51)
+rd.yes <- 133 / (133 + 828)
+sales.yes <- 92 / (92 + 354)
+human.proportions <- c(Yes = human.yes, No = 1 - human.yes)
+rd.proportions <- c(Yes = rd.yes, No = 1 - rd.yes)
+sales.proportions <- c(Yes = sales.yes, No = 1 -  sales.yes)
+
+human.labels <- sprintf("%s (%.1f%%)", names(human.proportions), 100 * human.proportions)
+rd.labels <- sprintf("%s (%.1f%%)", names(rd.proportions), 100 * rd.proportions)
+sales.labels <- sprintf("%s (%.1f%%)", names(sales.proportions), 100 * sales.proportions)
+
+layout(matrix(c(1,2,3), 1, 3))
+pie(human.proportions, labels = human.labels, main = "Human.Resources.Proportion", col = c("green", "lightgrey"))
+pie(rd.proportions, labels = rd.labels, main = "Research & Development.Proportion", col = c("blue", "lightgrey"))
+pie(sales.proportions, labels = sales.labels, main = "Sales.Proportion", col = c("orange", "lightgrey"))
+```
+
+
+
+**Based on the grouped barplot and pie chart, employees in the sales department has the the most attrition proportion of 20.6%, and employees in the research and development department has the the least attrition proportion of 13.8%**
+
+
+**Attrition vs. Education Field**
+```{r Education Field, echo=FALSE, message=FALSE, warning=FALSE}
+# Grouped Bar Chart 
+Edu_field <- ggplot(IBM_Employee, aes(EducationField)) + 
+  geom_bar(aes(fill = Attrition), position = "dodge") +
+  ggtitle("Attrition vs. Education Field") +
+  theme(axis.text = element_text(size = 7), 
+        legend.text = element_text(size = 4), 
+        title = element_text(size = 8)) +
+  geom_text(stat = "count", aes(label = ..count.., group = Attrition), 
+            vjust = -0.3, col = "red4", size = 2,
+            position = position_dodge(width = 0.9)) +
+  scale_fill_manual(values = c("#9E7A7A", "#F8C3CD"), labels = c("No", "Yes"))
+
+Edu_field
+```
+
+```{r echo=FALSE, fig.height=6, fig.width=9, message=FALSE, warning=FALSE}
+# Proportions Pie Chart
+hr.yes <- 7 / (7 + 20)
+ls.yes <- 89 / (89 + 517)
+mark.yes <- 35 / (35 + 124)
+med.yes <- 63 / (63 + 401)
+oth.yes <- 11 / (11 + 71)
+tech.yes <- 32 / (32 + 100)
+
+hr.proportions <- c(Yes = hr.yes, No = 1 - hr.yes)
+ls.proportions <- c(Yes = ls.yes, No = 1 - ls.yes)
+mark.proportions <- c(Yes = mark.yes, No = 1 -mark.yes)
+med.proportions <- c(Yes = med.yes, No = 1 - med.yes)
+oth.proportions <- c(Yes = oth.yes, No = 1 - oth.yes)
+tech.proportions <- c(Yes = tech.yes, No = 1 - tech.yes)
+
+hr.labels <- sprintf("%s (%.1f%%)", names(hr.proportions), 100 * hr.proportions)
+ls.labels <- sprintf("%s (%.1f%%)", names(ls.proportions), 100 * ls.proportions)
+mark.labels <- sprintf("%s (%.1f%%)", names(mark.proportions), 100 * mark.proportions)
+med.labels <- sprintf("%s (%.1f%%)", names(med.proportions), 100 * med.proportions)
+oth.labels <- sprintf("%s (%.1f%%)", names(oth.proportions), 100 * oth.proportions)
+tech.labels <- sprintf("%s (%.1f%%)", names(tech.proportions), 100 * tech.proportions)
+
+layout_matrix <- matrix(c(1,2,3,4,5,6), nrow = 2, byrow = TRUE)
+layout(layout_matrix)
+pie(hr.proportions, labels = hr.labels, main = "Human.Resources.Proportion", col = c("green", "lightgrey"))
+pie(ls.proportions, labels = ls.labels, main = "Life & Sciences.Proportion", col = c("blue", "lightgrey"))
+pie(mark.proportions, labels = mark.labels, main = "Marketing.Proportion", col = c("orange", "lightgrey"))
+pie(med.proportions, labels = med.labels, main = "Medical.Proportion", col = c("purple", "lightgrey"))
+pie(tech.proportions, labels = tech.labels, main = "Technical.Degree.Proportion", col = c("pink", "lightgrey"))
+pie(oth.proportions, labels = oth.labels, main = "Other.Proportion", col = c("yellow", "lightgrey"))
+
+```
+
+
+**Based on the grouped barplot and pie chart, there are significant differences between employees who attrited and not attrited among each department. Specifically, without looking at the other unknown departments, attrition has the most proportion of 25.9% employee attrition within Human Resources department. There is the least proportion of 13.4% employee attrition within other departments.**
+
+
+**Attrition vs. Environment Satisfaction**
+```{r Environment Satisfaction, echo=FALSE, message=FALSE, warning=FALSE}
+# Grouped Bar Chart 
+Environment <- ggplot(IBM_Employee, aes(EnvironmentSatisfaction)) + 
+  geom_bar(aes(fill = Attrition), position = "dodge") +
+  ggtitle("Attrition vs. Environment Satisfaction") +
+  theme(axis.text = element_text(size = 7), 
+        legend.text = element_text(size = 4), 
+        title = element_text(size = 8)) +
+  geom_text(stat = "count", aes(label = ..count.., group = Attrition), 
+            vjust = -0.3, col = "red4", size = 2,
+            position = position_dodge(width = 0.9)) +
+  scale_fill_manual(values = c("#33A6B8", "#DDD23B"), labels = c("No", "Yes"))
+
+Environment
+```
+
+```{r message=FALSE, warning=FALSE}
+# Proportion Pie Chart
+low.yes <- 72 / (72 + 212)
+medium.yes <- 43 / (43 + 244)
+high.yes <- 62 / (62 + 391)
+veryhigh.yes <- 60 / (60 + 386)
+
+low.proportions <- c(Yes = low.yes, No = 1 - low.yes)
+medium.proportions <- c(Yes = medium.yes, No = 1 - medium.yes)
+high.proportions <- c(Yes = high.yes, No = 1 -high.yes)
+veryhigh.proportions <- c(Yes = veryhigh.yes, No = 1 - veryhigh.yes)
+
+low.labels <- sprintf("%s (%.1f%%)", names(low.proportions), 100 * low.proportions)
+medium.labels <- sprintf("%s (%.1f%%)", names(medium.proportions), 100 * medium.proportions)
+high.labels <- sprintf("%s (%.1f%%)", names(high.proportions), 100 * high.proportions)
+veryhigh.labels <- sprintf("%s (%.1f%%)", names(veryhigh.proportions), 100 * veryhigh.proportions)
+
+layout_matrix <- matrix(c(1,2,3,4), nrow = 2, byrow = TRUE)
+layout(layout_matrix)
+pie(low.proportions, labels = low.labels, main = "Low.Proportion", col = c("green", "lightgrey"))
+pie(medium.proportions, labels = medium.labels, main = "Medium.Proportion", col = c("blue", "lightgrey"))
+pie(high.proportions, labels = high.labels, main = "High.Proportion", col = c("orange", "lightgrey"))
+pie(veryhigh.proportions, labels = veryhigh.labels, main = "Very High.Proportion", col = c("purple", "lightgrey"))
+```
+
+
+In the Environment Satisfaction variable, the numbers 1-4 represents an increasing satisfaction of environment. 1 means "Low", 2 mean "Medium", 3 means "High", and 4 means "Very High".
+
+**Importantly, there exists a negative correlation between Environment Satisfaction and attrition. Employees who are most satisfied have a smaller attrition proportion.**
+
+
+#### Model Selection
+
+*Stepwise Forward Selection*
+```{r Stepwise Forward, message=FALSE, warning=FALSE}
+# full model
+glm.full <- glm(Attrition ~ . , family = binomial, IBM_Employee)
+
+# null model with only intercept
+glm.null <- glm(Attrition ~ 1 , family = binomial, IBM_Employee)
+
+# model using forward selection
+forward.model <- step(glm.null, direction = "forward", 
+                         scope = list(lower = glm.null, upper = glm.full), trace = FALSE)
+summary(forward.model)
+```
+
+**Using `stepwise forward` model selection summary, we observed that there are still some variables such as `JobRole` and `StockOptionLevel` that are not significant by looking at the p-value larger than 0.05. Our goal is try to merge and classify data to eventually get all variables to be significant to get the best model.**
+
+
+*Merge Categories*
+```{r Merge category, message=FALSE, warning=FALSE}
+IBM_Employee_new1 <- IBM_Employee %>% 
+  # combine management and science related jobs
+  mutate(JobRole = case_when(
+    JobRole %in% c("Manager", "Manufacturing Director", "Research Director") ~ "Management",
+    JobRole %in% c("Laboratory Technician", "Research Scientist") ~ "Scientist",
+    TRUE ~ JobRole)) %>%
+  # combine stock Option Level 2 and 3
+  mutate(StockOptionLevel = case_when(
+    StockOptionLevel %in% c("2", "3") ~ "2",
+    TRUE ~ StockOptionLevel)) 
+```
+
+*Job Role*
+Within `JobRole` variable, there are 9 categories "Healthcare Representative, Human Resources, Laboratory Technician, Manager, Manufacturing Director, Research Director, Research Scientist, Sales Executive, and Sales Representative". From the model summary, we know that the model set "Healthcare Representative" as the base line model and compared other categories with it. By looking at all p-values for all job role categories, we still have `Manager, Manufacturing Director, Research Director, Research Scientist` variables being not significant.
+
+We decided to merge `Manager, Manufacturing Director, Research Director` positions into one category called `Management` since they are all relate to management position. Also, `Laboratory Technician, Research Scientist` are both related to science positions, so we decided to merge these two into one `Scientist`.
+
+
+*Stock Option Level*
+Within `StockOptionLevel` variable, there are 4 levels "0, 1, 2, 3". From the model summary, we know that the model set level "0" as the base line and compared other levels with it. By looking at all the p-values for each level, we still have `level3` being not significant to the model, which means comparing level 3 with level 2, it did not enhance the model significance, so level 2 and 3 most likely do not have significant difference on the impact of attrition. So we decided to merge `StockOptionLevel2` and `StockOptionLevel3` together.
+
+
+*Repeat stepwise forward selection after merging some categories*
+```{r stepwise forward after merging, message=FALSE, warning=FALSE}
+# update full model
+glm.full <- glm(Attrition ~ . , family = binomial, IBM_Employee_new1)
+
+# update null model with only intercept
+glm.null <- glm(Attrition ~ 1 , family = binomial, IBM_Employee_new1)
+
+# model using forward selection
+forward.model <- step(glm.null, direction = "forward", 
+                         scope = list(lower = glm.null, upper = glm.full), trace = FALSE)
+summary(forward.model)
+```
+
+*Select dependent variables after forward selection*
+```{r Employee_New, message=FALSE, warning=FALSE}
+# 23 variables 
+IBM_Employee_new1 <- select(IBM_Employee_new1, c("Attrition", "OverTime", "JobRole", "JobLevel", "StockOptionLevel", "EnvironmentSatisfaction", "JobSatisfaction", "JobInvolvement", "BusinessTravel", "YearsWithCurrManager", "YearsSinceLastPromotion", "WorkLifeBalance", "DistanceFromHome", "Age", "NumCompaniesWorked", "RelationshipSatisfaction", "TrainingTimesLastYear", "YearsInCurrentRole", "Gender", "TotalWorkingYears", "YearsAtCompany", "DailyRate", "EducationField", "MonthlyIncome"))
+
+# Number of rows and cols
+dim(IBM_Employee_new1)
+```
+**After the forward selection, the model left with `23 depedent variables`.**
+
+
+*Model Selection Using Backward Regsubsets*
+```{r}
+best_subset <- regsubsets(Attrition ~ .,IBM_Employee_new1, method = "forward", nvmax = 23) 
+results <- summary(best_subset)
+results
+```
+
+```{r}
+# Adj R2, BIC, CP Plot
+tibble(predictors = 1:23,
+       adj_R2 = results$adjr2,
+       Cp = results$cp,
+       BIC = results$bic) %>%
+  gather(statistic, value, -predictors) %>%
+  ggplot(aes(predictors, value, color = statistic)) +
+  geom_line(show.legend = F) +
+  geom_point(show.legend = F) +
+  facet_wrap(~ statistic, scales = "free")
+```
+
+```{r}
+which.max(results$adjr2)
+which.min(results$bic)
+which.min(results$cp)
+```
+
+```{r}
+# using the minimum BIC to find the best model coefficients
+coef(best_subset, 17)
+```
+
+*Final Dependent Variables Selected*
+```{r Employee_New2, message=FALSE, warning=FALSE}
+IBM_Employee_new2 <- select(IBM_Employee_new1, c("Attrition", "OverTime", "JobRole", "JobLevel", "StockOptionLevel", "JobSatisfaction", "JobInvolvement", "BusinessTravel", "WorkLifeBalance", "DistanceFromHome", "Age", "NumCompaniesWorked", "TotalWorkingYears", "EducationField"))
+
+dim(IBM_Employee_new2)
+```
+
+**Based on the regsubset model selection using the minimum BIC, finally, we left with `13 dependent variables`.**
+
+
+#### The Lasso Method
+*Split the data into Training set and Testing set*
+```{r}
+# split the data 70/30 into training set and test set
+train.idx <- sample(1470, 1029)
+train <- IBM_Employee_new2[train.idx,]
+test <- IBM_Employee_new2[-train.idx,]
+```
+
+
+*Find the optimal value of lambda that minimizes the cross-validation error*
+```{r}
+# Subset predictor and response variables
+x <- model.matrix(Attrition ~ ., train)[, -1]
+y <- train$Attrition
+```
+
+```{r}
+# Create a Lasso Regression
+cv.lasso <- cv.glmnet(x, y, alpha = 1, family = "binomial")
+plot(cv.lasso)
+```
+
+
+**In order to perform the Lasso method of variable selection, we need to find the optimal lambda value, numerical value of the amount of shrinkage.**
+
+**The plot displays the cross-validation error according to the log of lambda. The left dashed vertical line indicates that the log of the `optimal value of lambda` is approximately `-6.3`, which is the one that minimizes the prediction error. This lambda value will gives us the most accurate model.**
+
+
+```{r}
+# exact value of lambda
+cv.lasso$lambda.min
+```
+
+```{r}
+# Regression Coefficients of the best model selected based on lambda
+coef(cv.lasso, cv.lasso$lambda.min)
+```
+**By using the minimum Lambda that provides the most accurate model, we have the same `13 dependent variables` as above model selection.**
+
+
+*Compute final model using lambda.min and make predictions*
+```{r}
+# Final model with lambda.min
+lasso_model <- glmnet(x, y, alpha = 1, family = "binomial",
+                      lambda = cv.lasso$lambda.min)
+
+# Make prediction on test data
+x.test <- model.matrix(Attrition ~., test)[,-1]
+actual <- test$Attrition
+
+pred_prob <- lasso_model %>% predict(newx = x.test)
+pred_class <- ifelse(pred_prob > 0.8, 1, 0)
+```
+
+
+*Misclassificstion Error Rate*
+```{r}
+mean(pred_class != actual)
+```
+
+**Using the minimum lambda to perform the Lasso model, we are not able to eliminate our dependent variables more. By comparing with the model accuracy of one time regression prediction result, we get the same misclassification error rate of 12.7%.**
+
+
+#### Model Evaluation and Prediction
+
+*Logistic Full Model using the finalized variables*
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# create a logistic regression model using the newest dataset
+full.mdl <- glm(Attrition ~ ., data = IBM_Employee_new2, family = "binomial")
+summary(full.mdl)
+```
+
+**We perform the logistic regression on predicting `Attrition` using the full updated model with 13 finalized variables, and we have a `AIC` result of 957.49.**
+
+
+*Logistic Regression Model*
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# create a logistic regression model using the train dataset
+log.reg.mdl <- glm(Attrition ~ ., data = train, family = "binomial")
+summary(log.reg.mdl)
+```
+**We perform the logistic full model using only the train dataset so that we can make comparison with predictions using test dataset later. Here we have a `AIC` result of 678.35 which is a pretty small AIC value.**
+
+
+*Model Performance*
+```{r}
+# Predict using train logistic model and test data
+predicted_probs <- predict(log.reg.mdl, newdata = test, type = "response")
+
+# Convert probabilities to binary outcome based on a threshold, 0.8
+predicted_outcome <- as.factor(ifelse(predicted_probs > 0.8, 1, 0))
+actual_outcome <- as.factor(test$Attrition)
+
+# Confusion matrix summary
+confusionMatrix(data = predicted_outcome, reference = actual_outcome)
+```
+
+*Misclassification Error Rate*
+```{r}
+mean(predicted_outcome != actual_outcome)
+```
+*ROC Curve*
+```{r}
+library(ROCR)
+pred <- prediction(predicted_probs, actual_outcome)
+perf <- performance(pred, "tpr", "fpr")
+plot(perf, colorize=TRUE,main="ROC Curve of testing data")
+```
+```{r}
+#Get the AUC
+unlist(slot(performance(pred, "auc"), "y.values"))
+```
+
+**By performing one time regression prediction and comparing the `predicted attrition using logistic model` with the `actual attrition in the dataset`, we have a result of the comparison in the confusion matrix with an accuracy of 87.3% and misclassification error of 12.7%. These numbers indicating that our model actually made a pretty good accuracy on the prediction. Now we want to use cross validation to enhance the randomization of the train and test data control to get a more accurate prediction.**
+
+
+*10-fold Cross Validation*
+```{r}
+#specify the cross-validation method
+ctrl <- trainControl(method = "cv", number = 10)
+
+#fit a regression model and use k-fold CV to evaluate performance
+cv_model <- train(Attrition ~ ., data = IBM_Employee_new2, method = "glm", family = binomial, trControl = ctrl)
+cv_model
+```
+
+*Model Performance*
+```{r}
+# using cross validation model and test data to make predictions
+pred_outcome <- predict(cv_model, newdata = IBM_Employee_new2)
+
+actual_outcome <- IBM_Employee_new2$Attrition
+
+confusionMatrix(pred_outcome, actual_outcome)
+```
+
+*Misclassificstion Error Rate*
+```{r}
+mean(pred_outcome != actual_outcome)
+```
+
+**By using the 10-fold cross validation to evaluate the model accuracy on predictions, we have a model accuracy of 88.6% with misclassification error of 11.4%.**
+
+**Comparing 10-fold cross validation performance with the one time regression performance above, 10-fold cross validation has a low misclassification error, which shows that our model is a good and meaningful model.**
+
+
+#### Classification Tree Model
+
+*Create a Tree Model Plot*
+```{r}
+# tree model using "class" method
+tree_model <- rpart(Attrition ~ ., data = train, method = "class")
+
+rpart.plot(tree_model)
+```
+
+*Model Performance*
+```{r}
+# make prediction using test data
+predictions <- predict(tree_model, test, type = "class")
+
+# confusion matrix summary
+confusionMatrix(data = predictions, reference = actual)
+```
+
+*Misclassificstion Error Rate*
+```{r}
+mean(predictions != actual)
+```
+**At last, we perform a decision tree model to show the classification method to get individual attrition rate based on individual data information.**
+
+**By comparing the prediction with actual attrition, we have a model accuracy of 83.2% with misclassification error to be 16.8%. Comparing decision tree model with the previous models, we see a consistency on the accuracy and error rate. Particularly, the prediction of the 10-fold cross validation model has the least misclassification error indicating this is a best model.**
+
+
+#### Conclusions and Discussion 
+
+*Our project focused on analyzing the IBM HR Analytics Employee Attrition & Performance data set with the goal of identifying key factors contributing to employee attrition. By employing logistic regression and decision tree, we sought to uncover statistically significant predictors that could potentially inform HR strategies aimed at reducing attrition rates.*
+
+*The logistic regression model allowed us to quantify the impact of various features on the likelihood of attrition, providing insights into which variables are most predictive of employee departure. Significant predictors identified through this model likely include factors such as job satisfaction, work-life balance, business travel, and age, among others. These variables showed a strong correlation with the likelihood of employees leaving the organization, highlighting areas for targeted intervention.*
+
+*Similarly, the decision tree model offered a visual representation of the decision rules leading to attrition, further validating the findings from the logistic regression and offering an intuitive understanding of how different variables interact to influence attrition. This model reinforced the importance of certain predictors and their thresholds, which can be critical in developing preventive strategies.*
+
+*Integrating findings from both models, our analysis suggests a multifaceted approach to reducing attrition rates. Strategies may include enhancing job satisfaction through meaningful work and recognition, improving work-life balance with flexible work arrangements. Implementing targeted HR interventions based on these insights can help in significantly reducing attrition rates, contributing to a more engaged and stable workforce. *
+
+
+#### Group Contribution 
+**Cindy Miao: **Determine the `business question`, process the `data cleaning and visualizations` and `Lasso` variable selection.\
+
+**Susie Liang: **Perform `Decision Tree` model and `10-fold Cross Validation` analysis.\
+
+**Haiying Lin: **Perform the `regsubset` forward selection,`logistic regression` analysis, and a `conclusion` based on statistical analysis.\
+
+***
