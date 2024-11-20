@@ -1,4 +1,4 @@
-Using the “IBM HR Analytics Employee Attrition & Performance” dataset from Kaggle, which offers a comprehensive look at various factors that might influence an employee's decision to leave the company. There are 16 numerical and 19 categorical variables in the dataset that encompass a range of factors from demographic details like age and gender to job-specific information such as role and travel frequency, alongside performance indicators.
+Using the “IBM HR Analytics Employee Attrition & Performance” dataset from Kaggle, which offers a comprehensive look at various factors that might influence an employee's decision to leave the company. There are 16 numerical and 19 categorical variables in the dataset that encompass a range of factors from demographic details like age and gender to job-specific information such as role and travel frequency, alongside performance indicators. Usng R and Julia these two programming languange.
 
 https://www.kaggle.com/datasets/pavansubhasht/ibm-hr-analytics-attrition-dataset/data
 
